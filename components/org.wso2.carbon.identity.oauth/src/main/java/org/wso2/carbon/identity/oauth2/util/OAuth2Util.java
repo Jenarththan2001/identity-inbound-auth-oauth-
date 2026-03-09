@@ -176,12 +176,12 @@ import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.sql.Timestamp;
 import java.text.ParseException;
@@ -3322,7 +3322,7 @@ public class OAuth2Util {
      * @param privateKey RSA Private key.
      * @return  JWSSigner
      */
-    public static JWSSigner createJWSSigner(RSAPrivateKey privateKey) {
+    public static JWSSigner createJWSSigner(PrivateKey privateKey) {
 
         boolean allowWeakKey = Boolean.parseBoolean(System.getProperty(ALLOW_WEAK_RSA_SIGNER_KEY));
         if (allowWeakKey && log.isDebugEnabled()) {
@@ -3387,7 +3387,7 @@ public class OAuth2Util {
 
             int tenantId = IdentityTenantUtil.getTenantId(tenantDomain);
             Key privateKey = getPrivateKey(tenantDomain, tenantId);
-            JWSSigner signer = OAuth2Util.createJWSSigner((RSAPrivateKey) privateKey);
+            JWSSigner signer = OAuth2Util.createJWSSigner((PrivateKey) privateKey);
             JWSHeader.Builder headerBuilder = new JWSHeader.Builder((JWSAlgorithm) signatureAlgorithm);
             headerBuilder.keyID(getKID(getCertificate(tenantDomain, tenantId), signatureAlgorithm, tenantDomain));
             Certificate certificate = getCertificate(tenantDomain, tenantId);
