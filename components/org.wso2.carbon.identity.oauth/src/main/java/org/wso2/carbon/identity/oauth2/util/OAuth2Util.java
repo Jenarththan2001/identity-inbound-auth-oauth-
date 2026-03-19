@@ -5565,7 +5565,13 @@ public class OAuth2Util {
         OAuthAppDO oAuthAppDO = OAuth2Util.getAppInformationByClientId(clientId, tenantDomain);
         return oAuthAppDO.isFapiConformanceEnabled();
     }
+    public static boolean isFapi1Enabled() {
+        return false;
+    }
 
+    public static boolean isFapi2Enabled() {
+        return true;
+    }
     /**
      * Check whether basic authorization header exists in a request.
      *
