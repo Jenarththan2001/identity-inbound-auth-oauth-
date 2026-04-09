@@ -66,7 +66,7 @@ import java.security.Key;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.cert.Certificate;
-import java.security.interfaces.RSAPrivateKey;
+import java.security.PrivateKey;
 import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -320,7 +320,7 @@ public class JWTTokenGenerator implements AuthorizationContextTokenGenerator {
             throws IdentityOAuth2Exception {
         try {
             Key privateKey = getPrivateKey(tenantDomain, tenantId);
-            JWSSigner signer = OAuth2Util.createJWSSigner((RSAPrivateKey) privateKey);
+            JWSSigner signer = OAuth2Util.createJWSSigner((PrivateKey) privateKey);
             signedJWT.sign(signer);
             return signedJWT;
         } catch (JOSEException e) {

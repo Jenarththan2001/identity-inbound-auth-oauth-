@@ -50,7 +50,7 @@ import java.io.UnsupportedEncodingException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLEncoder;
-import java.security.interfaces.RSAPrivateKey;
+import java.security.PrivateKey;
 import java.text.ParseException;
 
 import javax.servlet.http.Cookie;
@@ -434,15 +434,15 @@ public class OIDCSessionManagementUtil {
     public static JWT decryptWithRSA(String tenantDomain, String idToken) throws IdentityOAuth2Exception {
 
         int tenantId = IdentityTenantUtil.getTenantId(tenantDomain);
-        RSAPrivateKey privateKey;
+        PrivateKey privateKey;
         KeyStoreManager keyStoreManager = KeyStoreManager.getInstance(tenantId);
 
         try {
             if (!tenantDomain.equals(MultitenantConstants.SUPER_TENANT_DOMAIN_NAME)) {
                 String fileName = KeystoreUtils.getKeyStoreFileLocation(tenantDomain);
-                privateKey = (RSAPrivateKey) keyStoreManager.getPrivateKey(fileName, tenantDomain);
+                privateKey = (PrivateKey) keyStoreManager.getPrivateKey(fileName, tenantDomain);
             } else {
-                privateKey = (RSAPrivateKey) keyStoreManager.getDefaultPrivateKey();
+                privateKey = (PrivateKey) keyStoreManager.getDefaultPrivateKey();
             }
             EncryptedJWT encryptedJWT = EncryptedJWT.parse(idToken);
             RSADecrypter decrypter = new RSADecrypter(privateKey);
