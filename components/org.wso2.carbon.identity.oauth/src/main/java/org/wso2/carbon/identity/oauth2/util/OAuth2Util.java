@@ -171,17 +171,12 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
-import java.security.Provider;
-import java.security.Security;
-import java.security.Signature;
-import java.security.SignatureException;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
@@ -3339,14 +3334,6 @@ public class OAuth2Util {
         return new RSASSASigner(privateKey, allowWeakKey);
     }
 
-    private static boolean isHSMEnabled() {
-        String hsmEnabled = org.wso2.carbon.utils.CarbonUtils.getServerConfiguration()
-                .getFirstProperty("Security.HSMKeyStore.Enabled");
-        boolean enabled = Boolean.parseBoolean(hsmEnabled);
-        log.info("HSM Status Check: " + enabled + " (Raw value: " + hsmEnabled + ")");
-        return enabled;
-    }
-
     /**
      * Generic Signing function
      *
@@ -3359,18 +3346,13 @@ public class OAuth2Util {
     public static JWT signJWT(JWTClaimsSet jwtClaimsSet, JWSAlgorithm signatureAlgorithm, String tenantDomain)
             throws IdentityOAuth2Exception {
 
-        boolean hsmEnabled = isHSMEnabled();
-
-        // Check if the algorithm is an RSA-PSS variant (PS256, PS384, or PS512)
-        boolean isPSS = JWSAlgorithm.PS256.equals(signatureAlgorithm) ||
-                JWSAlgorithm.PS384.equals(signatureAlgorithm) ||
-                JWSAlgorithm.PS512.equals(signatureAlgorithm);
-
-        if (hsmEnabled && isPSS) {
-            // HSM is enabled and PSS algorithm detected - use custom JCA signing
-            // to bypass Nimbus's BouncyCastle dependency which doesn't work with P11Key
-            log.info("Bypassing Nimbus: HSM is enabled and PSS algorithm (" + signatureAlgorithm.getName() +
-                    ") detected. Using custom JCA signing with SunPKCS11 provider.");
+        if (HsmSigningHelper.isHSMEnabled() && HsmSigningHelper.isPSSAlgorithm(signatureAlgorithm)) {
+            // HSM is enabled and PSS algorithm detected — bypass Nimbus's BouncyCastle
+            // dependency which doesn't work with P11Key (SHA256withRSAandMGF1 → only BC registers it).
+            if (log.isDebugEnabled()) {
+                log.debug("HSM+PSS detected (" + signatureAlgorithm.getName() +
+                        "). Using HsmSigningHelper to bypass Nimbus.");
+            }
             return signJWTWithHSMPSS(jwtClaimsSet, signatureAlgorithm, tenantDomain);
         }
 
@@ -3391,9 +3373,8 @@ public class OAuth2Util {
 
     /**
      * Sign JWT token using HSM (PKCS#11) with PSS algorithm.
-     * This method bypasses Nimbus's RSASSASigner which uses BouncyCastle naming convention
-     * (SHA256withRSAandMGF1) that doesn't work with HSM P11Key handles.
-     * Instead, it uses the SunPKCS11 provider with the correct algorithm name (SHA256withRSASSA-PSS).
+     * Delegates to {@link HsmSigningHelper#signPSS} which bypasses Nimbus's BouncyCastle
+     * dependency and uses the SunPKCS11 provider with the correct algorithm names.
      *
      * @param jwtClaimsSet       contains JWT body
      * @param signatureAlgorithm JWT signing algorithm (PS256, PS384, or PS512)
@@ -3431,35 +3412,11 @@ public class OAuth2Util {
             SignedJWT signedJWT = new SignedJWT(header, jwtClaimsSet);
             byte[] signingInput = signedJWT.getSigningInput();
 
-            // Get the HSM provider from the private key
-            Provider hsmProvider = getHSMProvider(privateKey);
-            if (hsmProvider == null) {
-                throw new IdentityOAuth2Exception(
-                        "Could not find SunPKCS11 provider for HSM PSS signing. " +
-                                "Ensure HSM is properly configured.");
-            }
+            // Delegate to HsmSigningHelper for the actual PSS signing via SunPKCS11
+            byte[] signatureBytes = HsmSigningHelper.signPSS(signingInput, privateKey, signatureAlgorithm);
 
-            if (log.isDebugEnabled()) {
-                log.debug("Using HSM provider: " + hsmProvider.getName() + " for PSS signing");
-            }
-
-            // Get JCA algorithm name and PSS parameters for the signature algorithm
-            String jcaAlgorithm = getJCAPSSAlgorithmName(signatureAlgorithm);
-            PSSParameterSpec pssSpec = getPSSParameterSpec(signatureAlgorithm);
-
-            // Create signature instance with HSM provider using correct algorithm name
-            Signature signature = Signature.getInstance(jcaAlgorithm, hsmProvider);
-            signature.setParameter(pssSpec);
-
-            // Initialize signing with HSM private key (P11Key)
-            signature.initSign(privateKey);
-            signature.update(signingInput);
-            byte[] signatureBytes = signature.sign();
-
-            // Encode signature and create the final signed JWT
+            // Encode signature and construct the final signed JWT
             Base64URL signatureBase64 = Base64URL.encode(signatureBytes);
-
-            // Parse the complete signed JWT from its three parts
             String serializedJWT = header.toBase64URL().toString() + "." +
                     signedJWT.getPayload().toBase64URL().toString() + "." +
                     signatureBase64.toString();
@@ -3470,88 +3427,12 @@ public class OAuth2Util {
 
             return SignedJWT.parse(serializedJWT);
 
-        } catch (NoSuchAlgorithmException e) {
-            throw new IdentityOAuth2Exception(
-                    "PSS algorithm not available in HSM provider. Ensure the HSM supports RSASSA-PSS.", e);
-        } catch (InvalidKeyException e) {
-            throw new IdentityOAuth2Exception(
-                    "Invalid HSM private key for PSS signing. Key type: " +
-                            "(check if key is a valid RSA key in HSM)", e);
-        } catch (SignatureException e) {
-            throw new IdentityOAuth2Exception("Error during HSM PSS signature operation", e);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new IdentityOAuth2Exception("HSM PSS signing failed: " + e.getMessage(), e);
         } catch (ParseException e) {
             throw new IdentityOAuth2Exception("Error parsing signed JWT after HSM signing", e);
         } catch (Exception e) {
             throw new IdentityOAuth2Exception("Unexpected error during HSM PSS signing", e);
-        }
-    }
-
-    /**
-     * Get the SunPKCS11 provider associated with the HSM private key.
-     *
-     * @param privateKey the private key (expected to be a P11Key from HSM)
-     * @return the SunPKCS11 provider, or null if not found
-     */
-    private static Provider getHSMProvider(PrivateKey privateKey) {
-        // First, try to get the provider from the key's class if it's a P11Key
-        String keyClassName = privateKey.getClass().getName();
-        if (keyClassName.contains("P11Key") || keyClassName.contains("pkcs11")) {
-            // The key is from PKCS#11, find the corresponding provider
-            for (Provider provider : Security.getProviders()) {
-                if (provider.getName().startsWith("SunPKCS11")) {
-                    // Check if this provider supports the required algorithm
-                    if (provider.getService("Signature", "SHA256withRSASSA-PSS") != null) {
-                        return provider;
-                    }
-                }
-            }
-            // If no provider with RSASSA-PSS support found, return first SunPKCS11
-            for (Provider provider : Security.getProviders()) {
-                if (provider.getName().startsWith("SunPKCS11")) {
-                    return provider;
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Get the JCA algorithm name for PSS algorithms that works with SunPKCS11.
-     * SunPKCS11 uses "SHA256withRSASSA-PSS" naming convention (not BouncyCastle's "SHA256withRSAandMGF1").
-     *
-     * @param signatureAlgorithm the JWS algorithm
-     * @return the JCA algorithm name for SunPKCS11
-     * @throws IdentityOAuth2Exception if the algorithm is not supported
-     */
-    private static String getJCAPSSAlgorithmName(JWSAlgorithm signatureAlgorithm) throws IdentityOAuth2Exception {
-        if (JWSAlgorithm.PS256.equals(signatureAlgorithm)) {
-            return "SHA256withRSASSA-PSS";  // SunPKCS11 naming, NOT "SHA256withRSAandMGF1" (BC naming)
-        } else if (JWSAlgorithm.PS384.equals(signatureAlgorithm)) {
-            return "SHA384withRSASSA-PSS";
-        } else if (JWSAlgorithm.PS512.equals(signatureAlgorithm)) {
-            return "SHA512withRSASSA-PSS";
-        } else {
-            throw new IdentityOAuth2Exception("Unsupported PSS algorithm: " + signatureAlgorithm);
-        }
-    }
-
-    /**
-     * Get the PSS parameter specification for the given signature algorithm.
-     *
-     * @param signatureAlgorithm the JWS algorithm
-     * @return the PSS parameter specification
-     * @throws IdentityOAuth2Exception if the algorithm is not supported
-     */
-    private static PSSParameterSpec getPSSParameterSpec(JWSAlgorithm signatureAlgorithm)
-            throws IdentityOAuth2Exception {
-        if (JWSAlgorithm.PS256.equals(signatureAlgorithm)) {
-            return new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
-        } else if (JWSAlgorithm.PS384.equals(signatureAlgorithm)) {
-            return new PSSParameterSpec("SHA-384", "MGF1", MGF1ParameterSpec.SHA384, 48, 1);
-        } else if (JWSAlgorithm.PS512.equals(signatureAlgorithm)) {
-            return new PSSParameterSpec("SHA-512", "MGF1", MGF1ParameterSpec.SHA512, 64, 1);
-        } else {
-            throw new IdentityOAuth2Exception("Unsupported PSS algorithm for parameter spec: " + signatureAlgorithm);
         }
     }
 
