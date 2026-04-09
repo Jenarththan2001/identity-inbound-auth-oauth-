@@ -1,17 +1,17 @@
 /*
- * Copyright (c) 2026, WSO2 LLC. (https://www.wso2.com).
+ * Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
  *
  * WSO2 LLC. licenses this file to you under the Apache License,
  * Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied. See the License for the
+ * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
  */
@@ -19,7 +19,6 @@
 package org.wso2.carbon.identity.oauth2.util;
 
 import com.nimbusds.jose.JWSAlgorithm;
-
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.wso2.carbon.utils.CarbonUtils;
@@ -33,45 +32,9 @@ import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
 
 /**
- * HSM-aware PSS signing utility for PKCS#11 / SunPKCS11 provider.
- *
- * <h3>Problem</h3>
- * Nimbus JOSE+JWT uses BouncyCastle's algorithm name {@code SHA256withRSAandMGF1} for PS256.
- * BouncyCastle is the <b>only</b> JCA provider that registers this name, and BC rejects HSM
- * keys because {@code P11PrivateKey} does not implement {@code java.security.interfaces.RSAPrivateKey}.
- * <p>
- * With RS256 ({@code SHA256withRSA}), 4 providers share the name (SunRsaSign, SunJSSE, BC,
- * SunPKCS11), so JCA auto-reroutes to SunPKCS11 when the first 3 fail. With PS256
- * ({@code SHA256withRSAandMGF1}), BC has a monopoly — no fallback exists.
- *
- * <h3>Solution</h3>
- * This utility bypasses Nimbus's signing pipeline entirely for PS256/PS384/PS512 when HSM
- * is enabled. It performs raw JCA signing using the SunPKCS11 provider with the standard
- * JCA algorithm name {@code SHA256withRSASSA-PSS} (instead of BC's {@code SHA256withRSAandMGF1}).
- *
- * <h3>Algorithm name mapping</h3>
- * <pre>
- * | JWS Algorithm | Nimbus/BC Name (BROKEN with HSM)  | SunPKCS11 Name (WORKS) |
- * |---------------|-----------------------------------|------------------------|
- * | PS256         | SHA256withRSAandMGF1              | SHA256withRSASSA-PSS   |
- * | PS384         | SHA384withRSAandMGF1              | SHA384withRSASSA-PSS   |
- * | PS512         | SHA512withRSAandMGF1              | SHA512withRSASSA-PSS   |
- * </pre>
- *
- * <h3>Usage</h3>
- * <pre>
- * // Guard — place before any Nimbus RSASSASigner call:
- * if (HsmSigningHelper.isHSMEnabled() &amp;&amp; HsmSigningHelper.isPSSAlgorithm(algorithm)) {
- *     byte[] signatureBytes = HsmSigningHelper.signPSS(signingInput, privateKey, algorithm);
- *     // manually construct JWS compact serialization
- * } else {
- *     // normal Nimbus path
- *     JWSSigner signer = new RSASSASigner(privateKey);
- * }
- * </pre>
- *
- * @see <a href="https://docs.oracle.com/en/java/javase/17/security/pkcs11-reference-guide1.html">
- *      PKCS#11 Reference Guide</a>
+ * Utility class for HSM-aware PSS signing using SunPKCS11 provider.
+ * Bypasses Nimbus/BouncyCastle for PS256/PS384/PS512 when HSM is enabled,
+ * since BC's algorithm name (SHA256withRSAandMGF1) is incompatible with SunPKCS11.
  */
 public class HsmSigningHelper {
 
@@ -81,18 +44,12 @@ public class HsmSigningHelper {
 
     private HsmSigningHelper() {
 
-        // Utility class — prevent instantiation.
     }
-
-    // ========================================================================
-    // Public API
-    // ========================================================================
 
     /**
      * Check if HSM is enabled in Carbon server configuration.
-     * Reads {@code Security.HSMKeyStore.Enabled} from {@code deployment.toml}.
      *
-     * @return {@code true} if HSM keystore is enabled.
+     * @return true if HSM keystore is enabled.
      */
     public static boolean isHSMEnabled() {
 
@@ -109,7 +66,7 @@ public class HsmSigningHelper {
      * Check if the given JWS algorithm is a PSS variant (PS256, PS384, PS512).
      *
      * @param algorithm JWS algorithm to check.
-     * @return {@code true} if the algorithm is PS256, PS384, or PS512.
+     * @return true if the algorithm is PS256, PS384, or PS512.
      */
     public static boolean isPSSAlgorithm(JWSAlgorithm algorithm) {
 
@@ -120,17 +77,13 @@ public class HsmSigningHelper {
 
     /**
      * Sign data using JCA Signature API with the SunPKCS11 provider.
-     * This bypasses Nimbus JOSE+JWT / BouncyCastle entirely.
+     * Bypasses Nimbus JOSE+JWT / BouncyCastle entirely for PSS algorithms.
      *
-     * <p>The caller is responsible for constructing the signing input (e.g.,
-     * {@code header.payload} for JWS) and assembling the final output
-     * (e.g., JWS compact serialization or detached JWS).</p>
-     *
-     * @param signingInput The data to sign (typically {@code header.payload} bytes).
-     * @param privateKey   The HSM-backed P11PrivateKey.
+     * @param signingInput The data to sign.
+     * @param privateKey   The HSM-backed private key.
      * @param algorithm    JWS algorithm (PS256, PS384, or PS512).
-     * @return Raw signature bytes (caller must Base64URL-encode as needed).
-     * @throws GeneralSecurityException If signing fails (no provider, invalid key, etc.).
+     * @return Raw signature bytes.
+     * @throws GeneralSecurityException If signing fails.
      */
     public static byte[] signPSS(byte[] signingInput, PrivateKey privateKey, JWSAlgorithm algorithm)
             throws GeneralSecurityException {
@@ -164,34 +117,22 @@ public class HsmSigningHelper {
         return signatureBytes;
     }
 
-    // ========================================================================
-    // Provider discovery
-    // ========================================================================
-
     /**
-     * Find the configured SunPKCS11 provider that can handle PSS signing.
-     *
-     * <p>Two-pass lookup:</p>
-     * <ol>
-     *   <li>Prefer a SunPKCS11 provider that advertises {@code SHA256withRSASSA-PSS}
-     *       support (filters out the unconfigured JDK template provider).</li>
-     *   <li>Fall back to the first SunPKCS11 provider if none advertise PSS.</li>
-     * </ol>
-     *
-     * <p>Returns {@code null} if the key is not an HSM key (not a P11Key).</p>
+     * Find the configured SunPKCS11 provider for PSS signing.
+     * Prefers a provider that advertises SHA256withRSASSA-PSS support,
+     * falls back to the first SunPKCS11 provider.
+     * Returns null if the key is not an HSM key.
      *
      * @param privateKey The private key to inspect.
-     * @return The SunPKCS11 provider, or {@code null} if not found / not an HSM key.
+     * @return The SunPKCS11 provider, or null if not found.
      */
     public static Provider getHSMProvider(PrivateKey privateKey) {
 
         String keyClassName = privateKey.getClass().getName();
         if (!keyClassName.contains("P11Key") && !keyClassName.contains("pkcs11")) {
-            // Not an HSM key — no provider needed.
             return null;
         }
 
-        // Pass 1: find a SunPKCS11 provider with explicit PSS support.
         for (Provider provider : Security.getProviders()) {
             if (provider.getName().startsWith("SunPKCS11")
                     && provider.getService("Signature", "SHA256withRSASSA-PSS") != null) {
@@ -199,7 +140,6 @@ public class HsmSigningHelper {
             }
         }
 
-        // Pass 2: fall back to first SunPKCS11 provider.
         for (Provider provider : Security.getProviders()) {
             if (provider.getName().startsWith("SunPKCS11")) {
                 return provider;
@@ -209,15 +149,11 @@ public class HsmSigningHelper {
         return null;
     }
 
-    // ========================================================================
-    // Algorithm mapping
-    // ========================================================================
-
     /**
      * Map a JWS algorithm to the JCA PSS algorithm name used by SunPKCS11.
      *
      * @param algorithm JWS algorithm (PS256, PS384, or PS512).
-     * @return JCA algorithm name (e.g., {@code SHA256withRSASSA-PSS}).
+     * @return JCA algorithm name.
      * @throws IllegalArgumentException If the algorithm is not a PSS variant.
      */
     public static String getJCAPSSAlgorithmName(JWSAlgorithm algorithm) {
@@ -233,13 +169,7 @@ public class HsmSigningHelper {
     }
 
     /**
-     * Create PSSParameterSpec for the given JWS algorithm.
-     * Parameters follow RFC 7518 §3.5 (JSON Web Algorithms — RSASSA-PSS):
-     * <ul>
-     *   <li>PS256: SHA-256 hash, MGF1-SHA-256, salt length 32</li>
-     *   <li>PS384: SHA-384 hash, MGF1-SHA-384, salt length 48</li>
-     *   <li>PS512: SHA-512 hash, MGF1-SHA-512, salt length 64</li>
-     * </ul>
+     * Create PSSParameterSpec for the given JWS algorithm per RFC 7518.
      *
      * @param algorithm JWS algorithm (PS256, PS384, or PS512).
      * @return PSS parameter specification.
